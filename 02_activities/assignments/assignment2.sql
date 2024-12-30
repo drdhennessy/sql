@@ -179,33 +179,42 @@ Think a bit about the row counts: how many distinct vendors, product names are t
 How many customers are there (y). 
 Before your final group by you should have the product of those two queries (x*y).  */
 
+-- Get vendor names, product names, and their prices
 WITH VendorProduct AS (
     SELECT 
         v.vendor_name,
         p.product_name,
         vi.original_price AS price
-    FROM 
-        vendor_inventory vi
-    JOIN 
-        vendor v ON vi.vendor_id = v.vendor_id
-    JOIN 
-        product p ON vi.product_id = p.product_id
+    FROM vendor_inventory vi
+    JOIN vendor v ON vi.vendor_id = v.vendor_id
+    JOIN product p ON vi.product_id = p.product_id
 ), 
+
+-- Get the count of customers
 CustomerCount AS (
     SELECT 
         COUNT(*) AS customer_count
-    FROM 
-        customer
+    FROM customer
+), 
+
+-- Cross join to simulate each product being sold to every customer
+VendorProductCustomer AS (
+    SELECT 
+        vp.vendor_name,
+        vp.product_name,
+        vp.price,
+        cc.customer_count
+    FROM VendorProduct vp
+    CROSS JOIN CustomerCount cc
 )
+
+-- Calculate total revenue for each vendor and product
 SELECT 
-    vp.vendor_name,
-    vp.product_name,
-    SUM(5 * vp.price * cc.customer_count) AS total_revenue
-FROM 
-    VendorProduct vp,
-    CustomerCount cc
-GROUP BY 
-    vp.vendor_name, vp.product_name;
+    vendor_name,
+    product_name,
+    SUM(5 * price * customer_count) AS total_revenue
+FROM VendorProductCustomer
+GROUP BY vendor_name, product_name;
 
 	
 -- INSERT
@@ -218,10 +227,8 @@ CREATE TABLE product_units AS
 SELECT 
     *,
     CURRENT_TIMESTAMP AS snapshot_timestamp
-FROM 
-    product
-WHERE 
-    product_qty_type = 'unit';
+FROM product
+WHERE product_qty_type = 'unit';
 
 
 /*2. Using `INSERT`, add a new row to the product_units table (with an updated timestamp). 
@@ -243,30 +250,33 @@ VALUES (
     'unit',
     CURRENT_TIMESTAMP
 );
-
+--Note: I gave the new record Apple Pie a different product_id to verify 
+--that the last one was deleted in the next part.
 
 -- DELETE
 /* 1. Delete the older record for the whatever product you added. 
 
 HINT: If you don't specify a WHERE clause, you are going to have a bad time.*/
---Identify the product_id of the older record:
 
+--Identify the product_id of the older record:
 SELECT 
     product_id,
     product_name,
     snapshot_timestamp
-FROM 
-    product_units
-WHERE 
-    product_name = 'Apple Pie'
-ORDER BY 
-    snapshot_timestamp ASC;
+FROM product_units
+WHERE product_name = 'Apple Pie'
+ORDER BY snapshot_timestamp ASC
+LIMIT 1;	
 
 --Delete older record:
-DELETE FROM 
-    product_units
-WHERE 
-    product_id = 1001;
+DELETE FROM product_units
+WHERE product_id = (
+        SELECT product_id
+        FROM product_units
+        WHERE product_name = 'Apple Pie'
+        ORDER BY snapshot_timestamp ASC
+        LIMIT 1
+    );
 
 
 -- UPDATE
@@ -286,30 +296,39 @@ Finally, make sure you have a WHERE statement to update the right row,
 	you'll need to use product_units.product_id to refer to the correct row within the product_units table. 
 When you have all of these components, you can run the update statement. */
 
--- 1: Add the column
+
+-- Add the column:
 ALTER TABLE product_units
 ADD current_quantity INT;
 
--- 2: Get the last quantity per product using ROW_NUMBER()
-WITH LastQuantity AS (
+-- Get the last quantity per product:
+WITH last_quantity AS (
     SELECT 
-        vi.product_id,
-        COALESCE(vi.quantity, 0) AS last_quantity,
-        ROW_NUMBER() OVER (PARTITION BY vi.product_id ORDER BY vi.market_date DESC) AS row_num
+        pu.product_id,
+        first_value(quantity) OVER (PARTITION BY pu.product_id ORDER BY market_date DESC) AS quantity 
     FROM 
         vendor_inventory vi
+	RIGHT JOIN 
+		product_units pu
+	ON vi.product_id = pu.product_id
 )
--- 3: Update the current_quantity in product_units
+-- Update the current_quantity in product_units:
 UPDATE product_units
-SET current_quantity = (
-    SELECT 
-        lq.last_quantity 
+SET current_quantity = COALESCE(last_quantity.quantity,0)
     FROM 
-        LastQuantity lq
+        last_quantity
     WHERE 
-        lq.product_id = product_units.product_id
-        AND lq.row_num = 1
-);
+        product_units.product_id = last_quantity.product_id;
 
+--Check
+SELECT 
+    product_id,
+	product_name,
+	product_size,
+	product_category_id,
+	product_qty_type,
+    current_quantity
+FROM 
+    product_units;
 
 
